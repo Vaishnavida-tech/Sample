@@ -1,0 +1,204 @@
+import psycopg2
+
+class DatabaseManager:
+    def __init__(self, dbname, user, password, host):
+        self.conn = None
+        self.cursor = None
+        self.dbname = dbname
+        self.user = user
+        self.password = password
+        self.host = host
+
+    def connect(self):
+        """Establishes a connection to the PostgreSQL database."""
+        try:
+            self.conn = psycopg2.connect(
+                dbname=Event Management,
+                user=postgres,
+                password=vaishnavi,
+                host=localhost
+            )
+            self.cursor = self.conn.cursor()
+            return True
+        except psycopg2.Error as e:
+            print(f"Error connecting to the database: {e}")
+            return False
+
+    def disconnect(self):
+        """Closes the database connection."""
+        if self.cursor:
+            self.cursor.close()
+        if self.conn:
+            self.conn.close()
+
+    # --- User Profile & Event Creation ---
+
+    def create_user(self, name, email, organization):
+        """Creates a new user profile."""
+        try:
+            query = "INSERT INTO users (name, email, organization) VALUES (%s, %s, %s) RETURNING user_id;"
+            self.cursor.execute(query, (name, email, organization))
+            user_id = self.cursor.fetchone()[0]
+            self.conn.commit()
+            return user_id
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error creating user: {e}")
+            return None
+
+    def get_user_by_email(self, email):
+        """Retrieves a user's details by email."""
+        try:
+            query = "SELECT * FROM users WHERE email = %s;"
+            self.cursor.execute(query, (email,))
+            return self.cursor.fetchone()
+        except psycopg2.Error as e:
+            print(f"Error getting user: {e}")
+            return None
+
+    def create_event(self, user_id, event_name, event_date, event_time, location, description):
+        """Creates a new event for a user."""
+        try:
+            query = "INSERT INTO events (user_id, event_name, event_date, event_time, location, description) VALUES (%s, %s, %s, %s, %s, %s) RETURNING event_id;"
+            self.cursor.execute(query, (user_id, event_name, event_date, event_time, location, description))
+            event_id = self.cursor.fetchone()[0]
+            self.conn.commit()
+            return event_id
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error creating event: {e}")
+            return None
+
+    def get_events_by_user(self, user_id):
+        """Retrieves all events for a given user."""
+        try:
+            query = "SELECT * FROM events WHERE user_id = %s ORDER BY event_date DESC;"
+            self.cursor.execute(query, (user_id,))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error getting events: {e}")
+            return None
+    
+    # --- Ticket & Registration Management ---
+    
+    def create_ticket(self, event_id, ticket_type, price, quantity):
+        """Creates a new ticket type for an event."""
+        try:
+            query = "INSERT INTO tickets (event_id, ticket_type, price, quantity_available) VALUES (%s, %s, %s, %s) RETURNING ticket_id;"
+            self.cursor.execute(query, (event_id, ticket_type, price, quantity))
+            ticket_id = self.cursor.fetchone()[0]
+            self.conn.commit()
+            return ticket_id
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error creating ticket: {e}")
+            return None
+
+    def register_attendee(self, event_id, name, email, ticket_id):
+        """Registers an attendee and records the ticket purchase."""
+        try:
+            # Insert attendee
+            query_attendee = "INSERT INTO attendees (event_id, name, email) VALUES (%s, %s, %s) RETURNING attendee_id;"
+            self.cursor.execute(query_attendee, (event_id, name, email))
+            attendee_id = self.cursor.fetchone()[0]
+
+            # Insert registration
+            query_registration = "INSERT INTO registrations (attendee_id, ticket_id) VALUES (%s, %s);"
+            self.cursor.execute(query_registration, (attendee_id, ticket_id))
+
+            # Update ticket quantity
+            query_update_ticket = "UPDATE tickets SET quantity_available = quantity_available - 1 WHERE ticket_id = %s;"
+            self.cursor.execute(query_update_ticket, (ticket_id,))
+
+            self.conn.commit()
+            return True
+        except psycopg2.Error as e:
+            self.conn.rollback()
+            print(f"Error registering attendee: {e}")
+            return False
+
+    def get_attendees_for_event(self, event_id):
+        """Retrieves all registered attendees for a specific event."""
+        try:
+            query = """
+            SELECT a.name, a.email, t.ticket_type, t.price
+            FROM attendees a
+            JOIN registrations r ON a.attendee_id = r.attendee_id
+            JOIN tickets t ON r.ticket_id = t.ticket_id
+            WHERE a.event_id = %s;
+            """
+            self.cursor.execute(query, (event_id,))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error getting attendees: {e}")
+            return None
+
+    # --- Business Insights ---
+
+    def get_event_insights(self, event_id):
+        """Provides business insights for a single event."""
+        try:
+            # Total tickets sold
+            query_sold = "SELECT SUM(r.count) FROM (SELECT COUNT(*) FROM registrations r JOIN attendees a ON r.attendee_id = a.attendee_id WHERE a.event_id = %s GROUP BY r.registration_id) as r;"
+            self.cursor.execute(query_sold, (event_id,))
+            tickets_sold = self.cursor.fetchone()[0] or 0
+
+            # Total revenue
+            query_revenue = """
+            SELECT SUM(t.price)
+            FROM registrations r
+            JOIN tickets t ON r.ticket_id = t.ticket_id
+            JOIN attendees a ON r.attendee_id = a.attendee_id
+            WHERE a.event_id = %s;
+            """
+            self.cursor.execute(query_revenue, (event_id,))
+            total_revenue = self.cursor.fetchone()[0] or 0
+
+            # Ticket type breakdown (COUNT)
+            query_breakdown = """
+            SELECT t.ticket_type, COUNT(r.registration_id)
+            FROM registrations r
+            JOIN tickets t ON r.ticket_id = t.ticket_id
+            JOIN attendees a ON r.attendee_id = a.attendee_id
+            WHERE a.event_id = %s
+            GROUP BY t.ticket_type;
+            """
+            self.cursor.execute(query_breakdown, (event_id,))
+            ticket_breakdown = self.cursor.fetchall()
+            
+            return {
+                "tickets_sold": tickets_sold,
+                "total_revenue": total_revenue,
+                "ticket_breakdown": dict(ticket_breakdown)
+            }
+        except psycopg2.Error as e:
+            print(f"Error getting business insights: {e}")
+            return None
+
+    # --- Other helpful functions ---
+    
+    def get_all_tickets_for_event(self, event_id):
+        """Retrieves all ticket types for a specific event."""
+        try:
+            query = "SELECT ticket_id, ticket_type, price, quantity_available FROM tickets WHERE event_id = %s;"
+            self.cursor.execute(query, (event_id,))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error getting tickets: {e}")
+            return None
+
+    def get_attendees_by_ticket_type(self, event_id, ticket_type):
+        """Retrieves attendees filtered by ticket type."""
+        try:
+            query = """
+            SELECT a.name, a.email
+            FROM attendees a
+            JOIN registrations r ON a.attendee_id = r.attendee_id
+            JOIN tickets t ON r.ticket_id = t.ticket_id
+            WHERE a.event_id = %s AND t.ticket_type = %s;
+            """
+            self.cursor.execute(query, (event_id, ticket_type))
+            return self.cursor.fetchall()
+        except psycopg2.Error as e:
+            print(f"Error getting attendees by ticket type: {e}")
+            return None
